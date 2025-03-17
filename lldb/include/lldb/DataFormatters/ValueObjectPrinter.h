@@ -119,8 +119,12 @@ protected:
 
   bool HasReachedMaximumDepth();
 
+  void GetPPTags(StreamString& type);
+
 private:
   bool ShouldShowName() const;
+
+  bool HasPPName() const;
 
   ValueObject *m_orig_valobj;
   ValueObject *m_valobj;
