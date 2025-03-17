@@ -509,8 +509,13 @@ bool FormatManager::ShouldPrintAsOneLiner(ValueObject &valobj) {
       else
         return false;
     }
-
-    total_children_name_len += child_sp->GetName().GetLength();
+    
+    //Do not consider fields equal to meta information
+    if (child_sp->GetName() != "__pp_specialization_type") {
+      total_children_name_len += child_sp->GetName().GetLength();
+    } else {
+      continue;
+    }
 
     // 50 itself is a "randomly" chosen number - the idea is that
     // overly long structs should not get this treatment
