@@ -90,9 +90,16 @@ bool ValueObjectPrinter::PrintValueObject() {
 
   if (ShouldPrintValueObject()) {
     PrintLocationIfNeeded();
-    m_stream->Indent();
+    ValueObject *synth_m_valobj = GetValueObjectForChildrenGeneration();
+    ValueObjectSP child_sp = GenerateChild(synth_m_valobj, 0);
 
-    PrintDecl();
+    if (m_valobj->GetName() != "__pp_tail"){
+      m_stream->Indent();
+      PrintDecl();
+    } else if (child_sp->GetName() != "__pp_head"){
+      m_stream->Indent();
+      PrintDecl();
+    }
   }
 
   bool value_printed = false;
@@ -281,8 +288,15 @@ void ValueObjectPrinter::PrintDecl() {
   StreamString typeName;
 
   // always print the type of the variable if it is equal to __pp_head
-  if (m_valobj->GetName() == "__pp_head" || (std::string(GetRootNameForDisplay()) == "__pp_tail" && m_valobj->GetName() == "__pp_tail")) {
+  if (m_valobj->GetName() == "__pp_head")
     show_type = true; 
+
+  // always print the type of a variable if it is the last one __pp_tail
+  if (m_valobj->GetName() == "__pp_tail") {
+    ValueObjectSP child_sp = GenerateChild(m_valobj, 0);
+    
+    if (child_sp->GetName() != "__pp_head")
+      show_type = true; 
   }
 
   // always show the type at the root level if it is invalid
@@ -358,12 +372,13 @@ void ValueObjectPrinter::PrintDecl() {
       m_stream->Printf("(%s) ", typeName.GetData());
     if (!varName.Empty())
       m_stream->Printf("%s =", varName.GetData());
-    else if (ShouldShowName() && !HasPPName())
-      m_stream->Printf(" =");
-    else if (ShouldShowName() && m_valobj->GetName() != "__pp_tail")
-      m_stream->Printf("=");
-    else if (m_valobj->GetName() == "__pp_tail" && std::string(GetRootNameForDisplay()) == "__pp_tail")
-      m_stream->Printf("=");
+    else if (ShouldShowName()){
+      // Constructions not related to PP
+      if (!HasPPName())
+        m_stream->Printf(" =");
+      else 
+        m_stream->Printf("=");
+    }
   }
 }
 
@@ -621,8 +636,9 @@ void ValueObjectPrinter::PrintChildrenPreamble(bool value_printed,
         m_stream->PutCString(": ");
       } else if ((value_printed || summary_printed || ShouldShowName()) && m_valobj->GetName() != "__pp_tail") {
         m_stream->PutChar(' ');
-      }//IF IT'S A HEAD, then you don't need to print it???
-      m_stream->PutCString("{\n");
+      }
+      if (m_valobj->GetName() != "__pp_tail")
+        m_stream->PutCString("{\n");
     }
     m_stream->IndentMore();
   }
@@ -748,12 +764,27 @@ void ValueObjectPrinter::PrintChildren(
           PrintChildrenPreamble(value_printed, summary_printed);
           any_children_printed = true;
         }
+        ValueObjectSP child_child_sp = GenerateChild(child_sp.get(), 0);
+
+        // Since the last child (__pp_tail) does not have a separate indentation, it is necessary to make it artificially
+        if (child_sp->GetName() == "__pp_tail" && child_child_sp->GetName() != "__pp_head"){
+          m_stream->IndentMore();
+        }
+
         PrintChild(child_sp, curr_ptr_depth);
+
+        if (child_sp->GetName() == "__pp_tail" && child_child_sp->GetName() != "__pp_head"){
+          m_stream->IndentLess();
+        }
       }
     }
 
-    if (any_children_printed)
-      PrintChildrenPostamble(print_dotdotdot);
+    if (any_children_printed){
+      if (m_valobj->GetName() != "__pp_tail")
+        PrintChildrenPostamble(print_dotdotdot);
+      else
+        m_stream->IndentLess();
+    }
     else {
       if (ShouldPrintEmptyBrackets(value_printed, summary_printed)) {
         if (ShouldPrintValueObject())

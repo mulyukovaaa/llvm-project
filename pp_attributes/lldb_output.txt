@@ -1,21 +1,17 @@
 (lldb) p sd
 (Simple.Decorator.Simple.Circle) {
   (Simple) = (a = 40)
-  (Decorator.Simple.Circle) ={
     (Decorator) = (b = 30)
-    (Simple.Circle) ={
       (Simple) = (a = 20)
-      (Circle) = (r = 10)
-    }
-  }
+        (Circle) = (r = 10)
 }
 (lldb) p ft
 (Figure.Triangle) {
   (Figure) = (color = 555)
-  (Triangle) = (a = 10, b = 20, c = 30)
+    (Triangle) = (a = 10, b = 20, c = 30)
 }
 (lldb) p fr
 (Figure.Rectangle) {
   (Figure) = (color = 333)
-  (Rectangle) = (w = 22, h = 11)
+    (Rectangle) = (w = 22, h = 11)
 }
