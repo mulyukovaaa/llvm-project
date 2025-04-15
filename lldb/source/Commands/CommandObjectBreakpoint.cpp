@@ -749,8 +749,8 @@ protected:
           // then let's try to check if this function is a multi-method.
           if (break_type == eSetTypeFunctionName && 
               m_options.m_func_names.size() == 1 && 
-              m_options.m_func_names[0].substr(0, 10) != "__pp_mm_2_"){
-            std::string pp_mm_prefix = "__pp_mm_2_";
+              m_options.m_func_names[0].substr(0, 8) != "__pp_mm_"){
+            std::string pp_mm_prefix = "__pp_mm_?_";
             std::string func_name = m_options.m_func_names[0];
             m_options.m_func_names.clear();
             m_options.m_func_names.push_back(pp_mm_prefix + func_name);

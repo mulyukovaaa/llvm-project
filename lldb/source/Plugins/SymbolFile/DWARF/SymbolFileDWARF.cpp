@@ -2377,7 +2377,10 @@ void SymbolFileDWARF::FindFunctions(const Module::LookupInfo &lookup_info,
 
   llvm::DenseSet<const DWARFDebugInfoEntry *> resolved_dies;
 
-  m_index->GetFunctions(lookup_info, *this, parent_decl_ctx, [&](DWARFDIE die) {
+  auto maybe_pp_lookup = resolvePPTemplateName(lookup_info);
+  const Module::LookupInfo &effective_lookup = maybe_pp_lookup ? *maybe_pp_lookup : lookup_info;
+
+  m_index->GetFunctions(effective_lookup, *this, parent_decl_ctx, [&](DWARFDIE die) {
     if (resolved_dies.insert(die.GetDIE()).second)
       ResolveFunction(die, include_inlines, sc_list);
     return true;
@@ -2386,18 +2389,21 @@ void SymbolFileDWARF::FindFunctions(const Module::LookupInfo &lookup_info,
   // contain the template parameters. Try again stripping '<' and anything
   // after, filtering out entries with template parameters that don't match.
   {
+    constexpr llvm::StringRef pp_mm_prefix("__pp_mm_");
     const llvm::StringRef name_ref = name.GetStringRef();
-    auto it = name_ref.find('<');
-    if (it != llvm::StringRef::npos) {
-      const llvm::StringRef name_no_template_params = name_ref.slice(0, it);
-
-      Module::LookupInfo no_tp_lookup_info(lookup_info);
-      no_tp_lookup_info.SetLookupName(ConstString(name_no_template_params));
-      m_index->GetFunctions(no_tp_lookup_info, *this, parent_decl_ctx, [&](DWARFDIE die) {
-        if (resolved_dies.insert(die.GetDIE()).second)
-          ResolveFunction(die, include_inlines, sc_list);
-        return true;
-      });
+    if (!name_ref.starts_with(pp_mm_prefix)) { 
+      auto it = name_ref.find('<');
+      if (it != llvm::StringRef::npos) {
+        const llvm::StringRef name_no_template_params = name_ref.slice(0, it);
+                          
+        Module::LookupInfo no_tp_lookup_info(lookup_info);
+        no_tp_lookup_info.SetLookupName(ConstString(name_no_template_params));
+        m_index->GetFunctions(no_tp_lookup_info, *this, parent_decl_ctx, [&](DWARFDIE die) {
+          if (resolved_dies.insert(die.GetDIE()).second)
+            ResolveFunction(die, include_inlines, sc_list);
+          return true;
+        });
+      }
     }
   }
 
@@ -4280,5 +4286,54 @@ void SymbolFileDWARF::GetCompileOptions(
       continue;
     args.insert({comp_unit, Args(flags)});
   }
+}
+
+std::optional<Module::LookupInfo> SymbolFileDWARF::resolvePPTemplateName(const Module::LookupInfo &lookup_info) {
+  const llvm::StringRef name_ref = lookup_info.GetLookupName().GetStringRef();
+  constexpr llvm::StringRef pp_mm_prefix("__pp_mm_?_");
+  constexpr llvm::StringRef pp_prefix("__pp_struct_");
+  constexpr llvm::StringRef pp_delimeter("__");
+  constexpr llvm::StringRef pp_postfix("__pp_spec");
+
+  if (!name_ref.starts_with(pp_mm_prefix) || !name_ref.contains('<'))
+    return std::nullopt;
+
+  auto [base_name, template_part] = name_ref.split("<");
+  size_t end_bracket = template_part.rfind('>');
+  if (end_bracket == llvm::StringRef::npos)
+    return std::nullopt;
+
+  template_part = template_part.drop_back();
+  llvm::SmallVector<llvm::StringRef, 4> template_args;
+  template_part.split(template_args, ",", -1, false);
+
+  size_t placeholder_pos = base_name.find('?');
+  if (placeholder_pos == llvm::StringRef::npos)
+    return std::nullopt;
+
+  std::string full_name = base_name.slice(0, placeholder_pos).str() +
+                          std::to_string(template_args.size()) +
+                          base_name.slice(placeholder_pos + 1, base_name.size()).str();
+
+  bool is_default = false;
+  for (auto &arg : template_args) {
+    arg = arg.trim();
+    llvm::SmallVector<llvm::StringRef, 4> pp_parts;
+    arg.split(pp_parts, ".", 2, false);
+
+    if (pp_parts.size() > 1) {
+      full_name += pp_prefix.str() + pp_parts[0].str() + pp_delimeter.str() + pp_parts[1].str();
+    } else if (pp_parts.size() == 1) {
+      is_default = true;
+      break;
+    }
+  }
+
+  if (!is_default)
+    full_name += pp_postfix;
+
+  Module::LookupInfo new_lookup_info(lookup_info);
+  new_lookup_info.SetLookupName(ConstString(full_name));
+  return new_lookup_info;
 }
 

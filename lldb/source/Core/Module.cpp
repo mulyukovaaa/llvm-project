@@ -836,10 +836,14 @@ void Module::FindFunctions(const Module::LookupInfo &lookup_info,
                            options.include_inlines, sc_list);
     // Now check our symbol table for symbols that are code symbols if
     // requested
-    if (options.include_symbols) {
-      if (Symtab *symtab = symbols->GetSymtab()) {
-        symtab->FindFunctionSymbols(lookup_info.GetLookupName(),
-                                    lookup_info.GetNameTypeMask(), sc_list);
+    // No need to search for symbols for the default pp-multimethod
+    if (!lookup_info.GetLookupName().GetStringRef().starts_with("__pp_mm") &&
+        !lookup_info.GetLookupName().GetStringRef().contains('<')){
+      if (options.include_symbols) {
+        if (Symtab *symtab = symbols->GetSymtab()) {
+          symtab->FindFunctionSymbols(lookup_info.GetLookupName(),
+                                      lookup_info.GetNameTypeMask(), sc_list);
+        }
       }
     }
   }
