@@ -575,6 +575,9 @@ protected:
   /// valid value that can be used in DIERef objects which will contain
   /// an index that identifies the .DWO or .o file.
   std::optional<uint64_t> m_file_index = std::nullopt;
+
+private:
+  std::optional<lldb_private::Module::LookupInfo> resolvePPTemplateName(const lldb_private::Module::LookupInfo &lookup_info);
 };
 
 #endif // LLDB_SOURCE_PLUGINS_SYMBOLFILE_DWARF_SYMBOLFILEDWARF_H
