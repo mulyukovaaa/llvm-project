@@ -15,3 +15,10 @@
   (Figure) = (color = 333)
     (Rectangle) = (w = 22, h = 11)
 }
+(lldb) p *s_ptr
+(Simple.Decorator.Simple.Circle) {
+  (Simple) = (a = 0)
+    (Decorator) = (b = 0)
+      (Simple) = (a = 0)
+        (Circle) = (r = 0)
+}
