@@ -22,6 +22,14 @@
 #include "lldb/lldb-forward.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "lldb/Symbol/CompileUnit.h"
+#include "lldb/Symbol/VariableList.h"
+#include "lldb/Symbol/Variable.h"
+#include "lldb/Core/ValueObjectVariable.h"
+#include "lldb/Core/Module.h"
+#include <Plugins/SymbolFile/DWARF/SymbolFileDWARF.h>
+#include <Plugins/SymbolFile/DWARF/DWARFUnit.h>
+
 
 using namespace llvm;
 using namespace lldb;
@@ -90,6 +98,9 @@ bool CommandObjectDWIMPrint::DoExecute(StringRef command,
       m_expr_options.m_verbosity, m_format_options.GetFormat());
   dump_options.SetHideRootName(eval_options.GetSuppressPersistentResult());
 
+  if (pp_struct_tags.empty())
+    InitPPStructures();
+
   // First, try `expr` as the name of a frame variable.
   if (StackFrame *frame = m_exe_ctx.GetFramePtr()) {
     auto valobj_sp = frame->FindVariable(ConstString(expr));
@@ -114,30 +125,268 @@ bool CommandObjectDWIMPrint::DoExecute(StringRef command,
   }
 
   // Second, also lastly, try `expr` as a source expression to evaluate.
-  {
-    auto *exe_scope = m_exe_ctx.GetBestExecutionContextScope();
-    ValueObjectSP valobj_sp;
-    ExpressionResults expr_result =
-        target.EvaluateExpression(expr, exe_scope, valobj_sp, eval_options);
-    if (expr_result == eExpressionCompleted) {
-      if (verbosity != eDWIMPrintVerbosityNone) {
-        StringRef flags;
-        if (args.HasArgs())
-          flags = args.GetArgStringWithDelimiter();
-        result.AppendMessageWithFormatv("note: ran `expression {0}{1}`", flags,
-                                        expr);
-      }
+  bool result_expr = EvaluateExpr(target, command, eval_options, result, dump_options);
+  return result_expr;
+}
 
-      valobj_sp->Dump(result.GetOutputStream(), dump_options);
-      result.SetStatus(eReturnStatusSuccessFinishResult);
-      return true;
-    } else {
-      if (valobj_sp)
-        result.SetError(valobj_sp->GetError());
-      else
-        result.AppendErrorWithFormatv(
-            "unknown error evaluating expression `{0}`", expr);
-      return false;
+bool CommandObjectDWIMPrint::InitPPStructures() {
+  StackFrame *frame = m_exe_ctx.GetFramePtr();
+  const SymbolContext &sc = frame->GetSymbolContext(lldb::eSymbolContextCompUnit);
+  lldb_private::CompileUnit *cu = sc.comp_unit;
+  VariableListSP global_variable_list_sp;
+
+  std::map<ConstString, lldb::TypeSP> struct_types_map;
+
+  if (!cu)
+    return false;
+
+  global_variable_list_sp = cu->GetVariableList(true);
+  if (!global_variable_list_sp)
+    return false;
+
+  TargetSP target_sp = m_exe_ctx.GetTargetSP();
+  ExecutionContext exe_ctx = m_exe_ctx;
+
+  for (size_t i = 0; i < global_variable_list_sp->GetSize(); ++i) {
+    lldb::VariableSP var_sp = global_variable_list_sp->GetVariableAtIndex(i);
+
+    if (!var_sp)
+      continue;
+
+    lldb::ValueObjectSP valobj_sp = ValueObjectVariable::Create(exe_ctx.GetBestExecutionContextScope(), var_sp);
+
+    llvm::StringRef tag_prefix = "__pp_tag___pp_struct_";
+
+    llvm::StringRef name = var_sp->GetName().AsCString();
+
+    size_t pos = name.find(tag_prefix);
+
+    if (pos == llvm::StringRef::npos)
+      continue;
+
+    name = name.drop_front(pos + tag_prefix.size());
+
+    auto [name1, name2] = name.split("__");
+
+    if (name1.empty() || name2.empty())
+      continue;
+
+    llvm::StringRef value = valobj_sp->GetValueAsCString();
+
+    ConstString key((name1 + "_" + value).str());
+    ConstString val(name2);
+
+    pp_struct_tags[key] = val;
+  }
+
+  return true;
+}
+
+void CommandObjectDWIMPrint::ExtractStructNames(llvm::StringRef mangled, llvm::StringSet<> &result) {
+  const llvm::StringRef prefix = "__pp_struct_";
+  while (!mangled.empty()) {
+    size_t pos = mangled.find(prefix);
+
+    if (pos != llvm::StringRef::npos)
+      mangled = mangled.drop_front(pos + prefix.size());
+
+    size_t end = mangled.find("__");
+
+    llvm::StringRef name;
+
+    if (end == 0 && pos == llvm::StringRef::npos) {
+      name = mangled.substr(end + 2);
+    } else if (end != llvm::StringRef::npos) {
+      name = mangled.substr(0, end);
+    }
+
+    if (!name.empty())
+      result.insert(name);
+
+    if (end == llvm::StringRef::npos || pos == llvm::StringRef::npos)
+      break;
+
+    mangled = mangled.drop_front(end);
+  }
+}
+
+// TO-DO: Refactor
+StringRef CommandObjectDWIMPrint::GetLastValuePPSpecIfPossible(lldb::ValueObjectSP valobj) {
+  if (!valobj || !valobj->GetError().Success())
+    return "";
+
+  size_t num_children = valobj->GetNumChildren();
+  ValueObjectSP tail_child;
+
+  for (size_t i = 0; i < num_children; ++i) {
+    ValueObjectSP child = valobj->GetChildAtIndex(i, true);
+    if (child && child->GetName() == "__pp_tail") {
+      tail_child = child;
+      break;
     }
   }
+
+  if (tail_child)
+    return GetLastValuePPSpecIfPossible(tail_child);
+
+  for (size_t i = 0; i < num_children; ++i) {
+    ValueObjectSP child = valobj->GetChildAtIndex(i, true);
+    if (child && child->GetName() == "__pp_specialization_type") {
+      return child->GetValueAsCString();
+    }
+  }
+
+  return "";
+}
+
+// TO-DO: Refactor
+bool CommandObjectDWIMPrint::EvaluateExpr(Target &target, 
+                                          StringRef command, 
+                                          const EvaluateExpressionOptions& eval_options, 
+                                          CommandReturnObject &result, 
+                                          DumpValueObjectOptions& dump_options) {
+
+  OptionsWithRaw args{command};
+  StringRef expr = args.GetRawPart();
+  
+  auto verbosity = GetDebugger().GetDWIMPrintVerbosity();
+  
+  ModuleSP module_sp = target.GetImages().GetModuleAtIndex(0);
+  SymbolFile *symbol_file = module_sp->GetSymbolFile();
+  lldb_private::TypeList type_list;
+  symbol_file->GetTypes(nullptr, lldb::eTypeClassStruct, type_list);
+  type_list.SortByName();
+
+  auto *exe_scope = m_exe_ctx.GetBestExecutionContextScope();
+  ValueObjectSP valobj_sp;
+  ExpressionResults expr_result = target.EvaluateExpression(expr, exe_scope, valobj_sp, eval_options);
+
+  if (expr_result == eExpressionCompleted) {
+    if (verbosity != eDWIMPrintVerbosityNone) {
+      StringRef flags;
+      if (args.HasArgs())
+        flags = args.GetArgStringWithDelimiter();
+      result.AppendMessageWithFormatv("note: ran `expression {0}{1}`", flags,
+                                      expr);
+    }
+
+    StringRef lastPPSpec = GetLastValuePPSpecIfPossible(valobj_sp);
+
+    if (!lastPPSpec.empty()) {
+
+      std::string lookup_type_name = CreateNewLookupType(valobj_sp, lastPPSpec);
+      StringRef new_lookup_type_name(lookup_type_name);
+
+      StringRef new_type_name;
+      std::string new_command;
+      size_t pos_ref = expr.find("*");
+
+      for (size_t i = 0; i < type_list.GetSize(); ++i) {
+        lldb::TypeSP type_sp = type_list.GetTypeAtIndex(i);
+        if (!type_sp)
+            continue;
+
+        StringRef name = type_sp->GetName().GetStringRef();
+        if (name.starts_with(new_lookup_type_name)){
+          ValueObjectSP suspect_valobj_sp;
+          new_type_name = name;
+          new_command = expr.substr(0, pos_ref+1).str() + "(" + new_type_name.str() + "*)" + expr.substr(pos_ref+1).str();
+          
+          ExpressionResults suspect_expr_result = target.EvaluateExpression(new_command, exe_scope, suspect_valobj_sp, eval_options);
+          if (suspect_expr_result == eExpressionCompleted) {
+            if (CheckPPType(suspect_valobj_sp)){
+              break;
+            }
+          }
+        }
+      }
+      return EvaluateExpr(target, new_command, eval_options, result, dump_options);
+
+    }
+    valobj_sp->Dump(result.GetOutputStream(), dump_options);
+    result.SetStatus(eReturnStatusSuccessFinishResult);
+    return true;
+
+  } else {
+    if (valobj_sp)
+      result.SetError(valobj_sp->GetError());
+    else
+      result.AppendErrorWithFormatv(
+          "unknown error evaluating expression `{0}`", expr);
+    return false;
+  }
+}
+
+// TO-DO: Refactor
+std::string CommandObjectDWIMPrint::CreateNewLookupType(ValueObjectSP valobj_sp, StringRef lastPPSpec) {
+  ConstString type_name = valobj_sp->GetTypeName();
+  StringRef last_type = type_name.GetStringRef();
+  size_t pos = last_type.rfind("__");
+
+  if (pos != llvm::StringRef::npos)
+    last_type = last_type.drop_front(pos + 2);
+
+  std::string whoNextStr = last_type.str() + "_" + lastPPSpec.str();
+  ConstString whoNext(whoNextStr);
+  const ConstString nextType = pp_struct_tags.at(whoNext);
+
+  std::string new_lookup_type_name;
+  if (type_name.GetStringRef().find("__pp_struct_") == 0) {
+    new_lookup_type_name = type_name.GetStringRef().str() + "____pp_struct_" + last_type.str() + "__" + nextType.GetStringRef().str(); 
+  } else {
+    new_lookup_type_name = "__pp_struct_" + last_type.str() + "__" + nextType.GetStringRef().str();
+  }
+
+  return new_lookup_type_name;
+}
+
+// TO-DO: Refactor
+bool CommandObjectDWIMPrint::CheckPPType(ValueObjectSP valobj_sp) {
+  if (!valobj_sp || !valobj_sp->GetError().Success())
+    return false;
+
+  auto heads = CollectAllNamedHead(valobj_sp);
+  size_t num_heads = heads.size();
+
+  for (size_t i = 0; i < num_heads - 1; ++i) {
+    size_t num_child = heads[0]->GetNumChildren();
+    for (size_t j = 0; j < num_child; ++j) {
+      ValueObjectSP child = heads[0]->GetChildAtIndex(j, true);
+      if (child && child->GetName() == "__pp_specialization_type") {
+        StringRef type_base = heads[i]->GetTypeName().GetStringRef();
+        StringRef type_next = heads[i + 1]->GetTypeName().GetStringRef();
+        StringRef value_spec = child->GetValueAsCString();
+
+        std::string check_rule = type_base.str() + "_" + value_spec.str();
+        if (pp_struct_tags.at(ConstString(check_rule)) != ConstString(type_next.str())){
+          return false;
+        }
+      }
+    }
+  }
+  return true;  
+}
+
+// TO-DO: Refactor
+SmallVector<ValueObjectSP, 4> CommandObjectDWIMPrint::CollectAllNamedHead(ValueObjectSP valobj) {
+  SmallVector<ValueObjectSP, 4> result;
+  if (!valobj || !valobj->GetError().Success())
+    return result;
+
+  size_t num_children = valobj->GetNumChildren();
+
+  for (size_t i = 0; i < num_children; ++i) {
+    ValueObjectSP child = valobj->GetChildAtIndex(i, true);
+    if (!child)
+      continue;
+
+    if (child->GetName() == "__pp_head")
+      result.push_back(child);
+
+    SmallVector<ValueObjectSP, 4> sub_result =
+        CollectAllNamedHead(child);
+    result.append(sub_result.begin(), sub_result.end());
+  }
+
+  return result;
 }

@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+#include <sstream>
+#include <numeric>
 
 #include "lldb/DataFormatters/ValueObjectPrinter.h"
 
@@ -78,7 +80,7 @@ bool ValueObjectPrinter::PrintValueObject() {
   // get out of it is its type.  But if we don't even have that, just print
   // the error and exit early.
   if (m_orig_valobj->GetError().Fail() 
-      && !m_orig_valobj->GetCompilerType().IsValid()) {
+       && !m_orig_valobj->GetCompilerType().IsValid()) {
     m_stream->Printf("Error: '%s'", m_orig_valobj->GetError().AsCString());
     return true;
   }
@@ -88,9 +90,16 @@ bool ValueObjectPrinter::PrintValueObject() {
 
   if (ShouldPrintValueObject()) {
     PrintLocationIfNeeded();
-    m_stream->Indent();
+    ValueObject *synth_m_valobj = GetValueObjectForChildrenGeneration();
+    ValueObjectSP child_sp = GenerateChild(synth_m_valobj, 0);
 
-    PrintDecl();
+    if (m_valobj->GetName() != "__pp_tail"){
+      m_stream->Indent();
+      PrintDecl();
+    } else if (child_sp->GetName() != "__pp_head"){
+      m_stream->Indent();
+      PrintDecl();
+    }
   }
 
   bool value_printed = false;
@@ -231,6 +240,39 @@ bool ValueObjectPrinter::PrintLocationIfNeeded() {
   return false;
 }
 
+//Converting a generalized type string to a concise form
+void ValueObjectPrinter::GetPPTags(StreamString& type){
+  std::string delimiter = "__pp_struct_";
+  size_t start = 0;
+  std::string line(type.GetString());
+  std::vector<std::string> pp_tags;
+
+  while ((start = line.find(delimiter, start)) != std::string::npos) {
+    start += delimiter.length();
+    size_t end = line.find("__pp_struct_", start);
+
+    if (end == std::string::npos) end = line.find_first_of(") \n", start);
+    if (end == std::string::npos) end = line.length();
+
+    std::string full_name = line.substr(start, end - start);
+
+    std::stringstream ss(full_name);
+    std::string token;
+
+    while (std::getline(ss, token, '_')) {
+      if (!token.empty() && (pp_tags.empty() || pp_tags.back() != token)) {
+          pp_tags.push_back(token);
+      }
+    }
+  }
+  std::string joinedTags = pp_tags.empty() ? "" : std::accumulate(
+      std::next(pp_tags.begin()), pp_tags.end(), pp_tags.front(),
+      [](const std::string& a, const std::string& b) { return a + "." + b; }
+  );
+  type.Clear();
+  type << joinedTags.c_str();
+}
+
 void ValueObjectPrinter::PrintDecl() {
   bool show_type = true;
   // if we are at the root-level and been asked to hide the root's type, then
@@ -244,6 +286,18 @@ void ValueObjectPrinter::PrintDecl() {
                 (m_curr_depth == 0 && !m_options.m_flat_output);
 
   StreamString typeName;
+
+  // always print the type of the variable if it is equal to __pp_head
+  if (m_valobj->GetName() == "__pp_head")
+    show_type = true; 
+
+  // always print the type of a variable if it is the last one __pp_tail
+  if (m_valobj->GetName() == "__pp_tail") {
+    ValueObjectSP child_sp = GenerateChild(m_valobj, 0);
+    
+    if (child_sp->GetName() != "__pp_head")
+      show_type = true; 
+  }
 
   // always show the type at the root level if it is invalid
   if (show_type) {
@@ -273,9 +327,13 @@ void ValueObjectPrinter::PrintDecl() {
     }
   }
 
+  if (!typeName.Empty() && typeName.GetString().startswith("__pp_struct")){
+    GetPPTags(typeName);
+  }
+
   StreamString varName;
 
-  if (ShouldShowName()) {
+  if (ShouldShowName() && !HasPPName()) {
     if (m_options.m_flat_output)
       m_valobj->GetExpressionPath(varName);
     else
@@ -314,8 +372,13 @@ void ValueObjectPrinter::PrintDecl() {
       m_stream->Printf("(%s) ", typeName.GetData());
     if (!varName.Empty())
       m_stream->Printf("%s =", varName.GetData());
-    else if (ShouldShowName())
-      m_stream->Printf(" =");
+    else if (ShouldShowName()){
+      // Constructions not related to PP
+      if (!HasPPName())
+        m_stream->Printf(" =");
+      else 
+        m_stream->Printf("=");
+    }
   }
 }
 
@@ -571,10 +634,11 @@ void ValueObjectPrinter::PrintChildrenPreamble(bool value_printed,
     if (ShouldPrintValueObject()) {
       if (IsRef()) {
         m_stream->PutCString(": ");
-      } else if (value_printed || summary_printed || ShouldShowName()) {
+      } else if ((value_printed || summary_printed || ShouldShowName()) && m_valobj->GetName() != "__pp_tail") {
         m_stream->PutChar(' ');
       }
-      m_stream->PutCString("{\n");
+      if (m_valobj->GetName() != "__pp_tail")
+        m_stream->PutCString("{\n");
     }
     m_stream->IndentMore();
   }
@@ -700,12 +764,27 @@ void ValueObjectPrinter::PrintChildren(
           PrintChildrenPreamble(value_printed, summary_printed);
           any_children_printed = true;
         }
+        ValueObjectSP child_child_sp = GenerateChild(child_sp.get(), 0);
+
+        // Since the last child (__pp_tail) does not have a separate indentation, it is necessary to make it artificially
+        if (child_sp->GetName() == "__pp_tail" && child_child_sp->GetName() != "__pp_head"){
+          m_stream->IndentMore();
+        }
+
         PrintChild(child_sp, curr_ptr_depth);
+
+        if (child_sp->GetName() == "__pp_tail" && child_child_sp->GetName() != "__pp_head"){
+          m_stream->IndentLess();
+        }
       }
     }
 
-    if (any_children_printed)
-      PrintChildrenPostamble(print_dotdotdot);
+    if (any_children_printed){
+      if (m_valobj->GetName() != "__pp_tail")
+        PrintChildrenPostamble(print_dotdotdot);
+      else
+        m_stream->IndentLess();
+    }
     else {
       if (ShouldPrintEmptyBrackets(value_printed, summary_printed)) {
         if (ShouldPrintValueObject())
@@ -749,7 +828,9 @@ bool ValueObjectPrinter::PrintChildrenOneLiner(bool hide_names) {
       if (child_sp)
         child_sp = child_sp->GetQualifiedRepresentationIfAvailable(
             m_options.m_use_dynamic, m_options.m_use_synthetic);
-      if (child_sp) {
+
+      //Remove __pp_specialization_type from output
+      if (child_sp->GetName() != "__pp_specialization_type" && child_sp) {
         if (idx)
           m_stream->PutCString(", ");
         if (!hide_names) {
@@ -833,4 +914,8 @@ bool ValueObjectPrinter::ShouldShowName() const {
   if (m_curr_depth == 0)
     return !m_options.m_hide_root_name && !m_options.m_hide_name;
   return !m_options.m_hide_name;
+}
+
+bool ValueObjectPrinter::HasPPName() const {
+  return (m_valobj->GetName() == "__pp_head" || m_valobj->GetName() == "__pp_tail");
 }

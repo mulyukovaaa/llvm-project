@@ -58,6 +58,8 @@ public:
 
   void RemoveMismatchedTypes(lldb::TypeClass type_class);
 
+  void SortByName();
+
 private:
   typedef collection::iterator iterator;
   typedef collection::const_iterator const_iterator;

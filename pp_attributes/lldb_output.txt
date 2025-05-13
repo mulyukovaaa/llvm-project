@@ -1,0 +1,24 @@
+(lldb) p sd
+(Simple.Decorator.Simple.Circle) {
+  (Simple) = (a = 40)
+    (Decorator) = (b = 30)
+      (Simple) = (a = 20)
+        (Circle) = (r = 10)
+}
+(lldb) p ft
+(Figure.Triangle) {
+  (Figure) = (color = 555)
+    (Triangle) = (a = 10, b = 20, c = 30)
+}
+(lldb) p fr
+(Figure.Rectangle) {
+  (Figure) = (color = 333)
+    (Rectangle) = (w = 22, h = 11)
+}
+(lldb) p *s_ptr
+(Simple.Decorator.Simple.Circle) {
+  (Simple) = (a = 0)
+    (Decorator) = (b = 0)
+      (Simple) = (a = 0)
+        (Circle) = (r = 0)
+}

@@ -745,8 +745,23 @@ protected:
         // get set before the target is set, but we won't know how to actually
         // set the breakpoint till we run.
         if (bp_sp->GetNumLocations() == 0 && break_type != eSetTypeException) {
-          output_stream.Printf("WARNING:  Unable to resolve breakpoint to any "
-                               "actual locations.\n");
+          // If we didn't get any location, and this is a function, 
+          // then let's try to check if this function is a multi-method.
+          if (break_type == eSetTypeFunctionName && 
+              m_options.m_func_names.size() == 1 && 
+              m_options.m_func_names[0].substr(0, 8) != "__pp_mm_"){
+            std::string pp_mm_prefix = "__pp_mm_?_";
+            std::string func_name = m_options.m_func_names[0];
+            m_options.m_func_names.clear();
+            m_options.m_func_names.push_back(pp_mm_prefix + func_name);
+            output_stream.Printf("There is no such function in debugger symbols. It's probably a multimethod.\n"
+                                 "Try find multimethod for function '%s'\n", 
+                                 func_name.c_str());
+            DoExecute(command, result);
+          } else {
+            output_stream.Printf("WARNING:  Unable to resolve breakpoint to any "
+                                 "actual locations.\n");
+          }
         }
       }
       result.SetStatus(eReturnStatusSuccessFinishResult);
