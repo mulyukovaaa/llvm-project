@@ -22,6 +22,14 @@
 #include "lldb/lldb-forward.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "lldb/Symbol/CompileUnit.h"
+#include "lldb/Symbol/VariableList.h"
+#include "lldb/Symbol/Variable.h"
+#include "lldb/Core/ValueObjectVariable.h"
+#include "lldb/Core/Module.h"
+#include <Plugins/SymbolFile/DWARF/SymbolFileDWARF.h>
+#include <Plugins/SymbolFile/DWARF/DWARFUnit.h>
+
 
 using namespace llvm;
 using namespace lldb;
@@ -90,6 +98,9 @@ bool CommandObjectDWIMPrint::DoExecute(StringRef command,
       m_expr_options.m_verbosity, m_format_options.GetFormat());
   dump_options.SetHideRootName(eval_options.GetSuppressPersistentResult());
 
+  if (pp_struct_tags.empty())
+    InitPPStructures();
+
   // First, try `expr` as the name of a frame variable.
   if (StackFrame *frame = m_exe_ctx.GetFramePtr()) {
     auto valobj_sp = frame->FindVariable(ConstString(expr));
@@ -139,5 +150,86 @@ bool CommandObjectDWIMPrint::DoExecute(StringRef command,
             "unknown error evaluating expression `{0}`", expr);
       return false;
     }
+  }
+}
+
+bool CommandObjectDWIMPrint::InitPPStructures() {
+  StackFrame *frame = m_exe_ctx.GetFramePtr();
+  const SymbolContext &sc = frame->GetSymbolContext(lldb::eSymbolContextCompUnit);
+  lldb_private::CompileUnit *cu = sc.comp_unit;
+  VariableListSP global_variable_list_sp;
+
+  std::map<ConstString, lldb::TypeSP> struct_types_map;
+
+  if (!cu)
+    return false;
+
+  global_variable_list_sp = cu->GetVariableList(true);
+  if (!global_variable_list_sp)
+    return false;
+
+  TargetSP target_sp = m_exe_ctx.GetTargetSP();
+  ExecutionContext exe_ctx = m_exe_ctx;
+
+  for (size_t i = 0; i < global_variable_list_sp->GetSize(); ++i) {
+    lldb::VariableSP var_sp = global_variable_list_sp->GetVariableAtIndex(i);
+
+    if (!var_sp)
+      continue;
+
+    lldb::ValueObjectSP valobj_sp = ValueObjectVariable::Create(exe_ctx.GetBestExecutionContextScope(), var_sp);
+
+    llvm::StringRef tag_prefix = "__pp_tag___pp_struct_";
+
+    llvm::StringRef name = var_sp->GetName().AsCString();
+
+    size_t pos = name.find(tag_prefix);
+
+    if (pos == llvm::StringRef::npos)
+      continue;
+
+    name = name.drop_front(pos + tag_prefix.size());
+
+    auto [name1, name2] = name.split("__");
+
+    if (name1.empty() || name2.empty())
+      continue;
+
+    llvm::StringRef value = valobj_sp->GetValueAsCString();
+
+    ConstString key((name1 + "_" + value).str());
+    ConstString val(name2);
+
+    pp_struct_tags[key] = val;
+  }
+
+  return true;
+}
+
+void CommandObjectDWIMPrint::ExtractStructNames(llvm::StringRef mangled, llvm::StringSet<> &result) {
+  const llvm::StringRef prefix = "__pp_struct_";
+  while (!mangled.empty()) {
+    size_t pos = mangled.find(prefix);
+
+    if (pos != llvm::StringRef::npos)
+      mangled = mangled.drop_front(pos + prefix.size());
+
+    size_t end = mangled.find("__");
+
+    llvm::StringRef name;
+
+    if (end == 0 && pos == llvm::StringRef::npos) {
+      name = mangled.substr(end + 2);
+    } else if (end != llvm::StringRef::npos) {
+      name = mangled.substr(0, end);
+    }
+
+    if (!name.empty())
+      result.insert(name);
+
+    if (end == llvm::StringRef::npos || pos == llvm::StringRef::npos)
+      break;
+
+    mangled = mangled.drop_front(end);
   }
 }

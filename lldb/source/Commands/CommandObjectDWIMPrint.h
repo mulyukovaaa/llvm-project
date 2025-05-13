@@ -46,10 +46,15 @@ public:
 private:
   bool DoExecute(llvm::StringRef command, CommandReturnObject &result) override;
 
+  bool InitPPStructures();
+
+  void ExtractStructNames(llvm::StringRef mangled, llvm::StringSet<> &result);
+
   OptionGroupOptions m_option_group;
   OptionGroupFormat m_format_options = lldb::eFormatDefault;
   OptionGroupValueObjectDisplay m_varobj_options;
   CommandObjectExpression::CommandOptions m_expr_options;
+  llvm::DenseMap<ConstString, ConstString> pp_struct_tags;
 };
 
 } // namespace lldb_private
