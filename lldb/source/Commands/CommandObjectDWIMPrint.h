@@ -14,6 +14,9 @@
 #include "lldb/Interpreter/OptionGroupFormat.h"
 #include "lldb/Interpreter/OptionGroupValueObjectDisplay.h"
 #include "lldb/Interpreter/OptionValueFormat.h"
+#include "lldb/Core/ValueObject.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace lldb_private {
 
@@ -49,6 +52,20 @@ private:
   bool InitPPStructures();
 
   void ExtractStructNames(llvm::StringRef mangled, llvm::StringSet<> &result);
+
+  llvm::StringRef GetLastValuePPSpecIfPossible(lldb::ValueObjectSP valobj);
+
+  bool EvaluateExpr(Target &target, 
+                    llvm::StringRef command, 
+                    const EvaluateExpressionOptions& eval_options, 
+                    CommandReturnObject &result, 
+                    DumpValueObjectOptions& dump_options);
+
+  std::string CreateNewLookupType(lldb::ValueObjectSP valobj_sp, llvm::StringRef lastPPSpec);
+
+  bool CheckPPType(lldb::ValueObjectSP valobj_sp);
+
+  llvm::SmallVector<lldb::ValueObjectSP, 4> CollectAllNamedHead(lldb::ValueObjectSP valobj);
 
   OptionGroupOptions m_option_group;
   OptionGroupFormat m_format_options = lldb::eFormatDefault;

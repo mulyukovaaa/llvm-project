@@ -211,6 +211,6 @@ void TypeList::SortByName() {
     [](const lldb::TypeSP &a, const lldb::TypeSP &b) {
     llvm::StringRef name_a = a ? a->GetName().GetStringRef() : "";
     llvm::StringRef name_b = b ? b->GetName().GetStringRef() : "";
-    return name_a > name_b;
+    return name_a < name_b;
   });
 }
